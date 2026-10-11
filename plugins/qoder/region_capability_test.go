@@ -14,8 +14,8 @@ func TestRegionCapabilitiesMatchObservedUpstream(t *testing.T) {
 		t.Fatalf("CN contract = %v, want campaign", cn.Contract)
 	}
 	intl := capabilitiesForRegion(regionIntl)
-	if !intl.Checkin {
-		t.Fatalf("Intl capabilities = %#v, want campaign check-in support", intl)
+	if intl.Checkin {
+		t.Fatalf("Intl capabilities = %#v, want check-in removed", intl)
 	}
 	if intl.Contract != checkinContractCampaign {
 		t.Fatalf("Intl contract = %v, want campaign", intl.Contract)
@@ -31,7 +31,7 @@ func TestRegionCapabilitiesMatchObservedUpstream(t *testing.T) {
 func TestIntlCheckinStatusErrorIsRealError(t *testing.T) {
 	err := classifyCheckinStatusError(regionIntl, 404, `{"errorCode":"NotFound"}`)
 	if err == nil || isUnsupportedCheckinError(err) {
-		t.Fatalf("error = %v, want real Intl check-in error", err)
+		t.Fatalf("error = %v, want real status error", err)
 	}
 }
 

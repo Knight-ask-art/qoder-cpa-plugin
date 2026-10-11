@@ -275,7 +275,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>Qoder 账号面板</h1>
-  <div class="sub">积分余额 · 每日签到（CN daily / Intl campaign，10:00 与 21:00）· 耗尽自动关</div>
+  <div class="sub">积分余额 · CN 每日签到（10:00 与 21:00）· 耗尽自动关</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -289,7 +289,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" id="importBtn" onclick="openImportModal()">导入 PAT 凭证</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
-    <button class="sec" id="claimProAllBtn" onclick="claimProAll(this)" title="为所有可领取的 CN 账号领取一次性 Pro 升级包（Intl 不支持）">全部领取 Pro</button>
     
     <label class="toggle" title="所有账号 10:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到</label>
     <span class="toggle" id="svtime"></span>
@@ -495,12 +494,13 @@ function card(a){
   // endpoint only serves as a fallback. Pro upgrade remains CN-only.
   const checked=ci.today_checked_in;
   const ciActive=ci.active!==false; // absent=true (default active)
-  const btnClass=checked?"done":(ciActive?"sec":"done");
-  const btnText=checked?"已签到":(ciActive?"签到":"不可签");
-  const btnDisabled=(checked||!ciActive)?" disabled=\"disabled\"":"";
-  let actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
-  // Pro 升级包改为顶部"全部领取 Pro"一次性处理：它是账号级的一次性权益，
-  // 逐个卡片点击只会让一个整体动作看起来像每个账号各自的事。
+  let actionHTML="";
+  if(!isIntl){
+    const btnClass=checked?"done":(ciActive?"sec":"done");
+    const btnText=checked?"已签到":(ciActive?"签到":"不可签");
+    const btnDisabled=(checked||!ciActive)?" disabled=\"disabled\"":"";
+    actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
+  }
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const cooling=Array.isArray(a.cooling)?a.cooling.filter(c=>Number(c&&c.seconds)>0):[];
   const coolingBadge=cooling.length?`<span class="badge cooling" title="按模型维度的临时冷却">冷却 ${cooling.length}</span>`:"";
@@ -1365,42 +1365,6 @@ async function setAccountDisabled(idx, disabled, nick, btn){
     await load(false);
   }catch(e){
     toast(verb+"失败","err",e.message||String(e));
-  }finally{
-    busy(btn,false);
-  }
-}
-// claimProAll 为所有可领取的账号领取一次性 Pro 升级包。不带 auth_index 让后端
-// 自己挑目标（它会跳过 Intl 和已领过的），面板只负责汇总结果。
-async function claimProAll(btn){
-  busy(btn,true);
-  try{
-    const d=await api("/claim-pro",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
-    if(d.error){toast("领取失败","err",asText(d.error));return}
-    const rs=Array.isArray(d.results)?d.results:[];
-    const sum=d.summary||{};
-    const ok=Number(sum.success||rs.filter(x=>x.success&&x.reason!=="unsupported").length)||0;
-    const already=Number(sum.already||0);
-    const unsupported=Number(sum.unsupported||0);
-    const fail=Number(sum.fail||rs.filter(x=>x.error).length)||0;
-    const parts=[];
-    if(ok) parts.push("成功 "+ok);
-    if(already) parts.push("无需领取 "+already);
-    if(unsupported) parts.push("不支持 "+unsupported);
-    if(fail) parts.push("失败 "+fail);
-    const detail=parts.join(" · ");
-    if(fail){
-      const errDetail=rs.filter(x=>x.error).map(x=>(x.nickname||x.auth_index||"")+": "+asText(x.error)).join("；");
-      toast("领取 Pro："+ok+" 成功 / "+fail+" 失败","err",errDetail||detail);
-    }else if(ok){
-      toast("领取 Pro："+ok+" 个账号成功","ok",detail);
-    }else if(unsupported&&!already){
-      toast("没有可领取的账号","warn",detail||"Intl 账号不支持 Pro 升级包");
-    }else{
-      toast("无需领取","ok",detail||"所有账号均已领取或活动未开放");
-    }
-    await load(true);
-  }catch(e){
-    toast("领取请求失败","err",e.message||String(e));
   }finally{
     busy(btn,false);
   }

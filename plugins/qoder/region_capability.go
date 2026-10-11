@@ -42,7 +42,7 @@ func capabilitiesForRegion(region string) regionCapabilities {
 	switch normalizeRegion(region) {
 	case regionIntl:
 		return regionCapabilities{
-			Checkin:    true,
+			Checkin:    false,
 			ProUpgrade: false,
 			Quota:      true,
 			Plan:       true,
