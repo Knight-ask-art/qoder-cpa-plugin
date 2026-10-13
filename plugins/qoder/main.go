@@ -258,6 +258,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
 		configure(request)
 		startAdoption()
+		seedModelCatalogMemory()
 		return okEnvelope(wbRegistration())
 	case pluginabi.MethodModelStatic:
 		return handleModelStatic(request)
@@ -355,7 +356,7 @@ type registrationCapability struct {
 // `make build` feeds from the VERSION file. This literal is the fallback for a
 // bare `go build`; keep it in step with VERSION so a stray build never
 // under-reports the plugin version.
-var version = "0.9.17"
+var version = "0.9.18"
 
 func wbRegistration() registration {
 	return registration{
@@ -369,7 +370,7 @@ func wbRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 10:00 and 21:00 local time for CN accounts (default true)."},
 				{Name: "login_region", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{regionCN, regionIntl}, Description: "Region for NEW logins: cn (qoder.com.cn, default) or intl (qoder.com). Existing accounts keep their own region; legacy qoder-cn-/qoder-intl- auth files are adopted automatically."},
-				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN when credits exhausted; re-enable CN after check-in restores credits (default true)."},
+				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto lifecycle for credit-driven states (default true). Since 0.9.18 exhaustion no longer disables an account (free rate-0 models stay callable; upstream hard-credit errors are the authority); instead this flag gates the cleanup that re-enables accounts the old rule had parked (except manual disables and session-dead credentials)."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent Keycloak offline-session expiry (default true)."},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model list. Each item can have id, name, alias, context, max_tokens, enabled, reasoning."},
 				{Name: "hidden_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Plugin-owned model deny-list. Hidden IDs are removed from CPA's model responses before registration; the panel persists hide/restore edits here."},
@@ -398,9 +399,15 @@ func wbRegistration() registration {
 // and on each models query; without caching, every reload fans out to one
 // upstream call per account.
 //
+// 12 hours (0.9.18, operator directive "半天一刷，或者手工点击刷新再刷"): the
+// Qoder catalog drifts on the scale of days, not minutes, so a 5-minute TTL
+// only bought redundant upstream fan-out on every reload cycle. The panel's
+// refresh button and GET /plugins/qoder/models?refresh=1 still force an
+// immediate re-pull. Fetched lists also survive restarts via model_store.go.
+//
 // The cache itself lives in models.go (keyed per account, because the CN and
 // Intl gateways advertise different chat keys).
-const dynamicModelsCacheTTL = 5 * time.Minute
+const dynamicModelsCacheTTL = 12 * time.Hour
 
 //
 // CPA applies oauth-model-alias to the models this plugin registers, so the

@@ -96,15 +96,19 @@ func TestNoQuotaPackIsNotExhaustion(t *testing.T) {
 	}
 }
 
-// 真的把钱花光（有已用量）仍然要算耗尽，否则停用逻辑就失效了。
+// 真的把钱花光（有已用量）仍然要算耗尽——但耗尽不再触发停用（0.9.18）：
+// 免费 rate-0 模型在零余额凭据上依旧可调用，付费模型由上游硬额度错误
+// 自行出清（冷却 + 面板徽标），整个 auth 不该被连坐。
 func TestGenuineExhaustionStillDetected(t *testing.T) {
 	addOn := map[string]any{"total": 2000, "used": 2000, "remaining": 0}
 	cr := fetchWithQuotaBody(t, quotaBody(t, addOn, true))
 	if !isCreditsExhausted(cr) {
 		t.Fatal("a spent pack must still read as exhausted")
 	}
-	if lifecycleActionFor(regionCN, cr) != lifecycleDisable {
-		t.Fatal("a spent account must still be parked")
+	for _, region := range []string{regionCN, regionIntl} {
+		if lifecycleActionFor(region, cr) != lifecycleNone {
+			t.Fatalf("region %s: exhaustion must not disable the account (0.9.18)", region)
+		}
 	}
 }
 

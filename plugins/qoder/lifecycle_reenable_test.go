@@ -79,11 +79,21 @@ func TestReenableDecisionIsRegionIndependent(t *testing.T) {
 	}
 }
 
-// 真正花光（remain=0, used>0）依旧不许恢复，否则停用逻辑就形同虚设。
-func TestReenableStillRefusesSpentAccount(t *testing.T) {
+// 0.9.18 起余额耗尽不再是停用理由：旧规则留下的"耗尽禁用"账号（余额
+// 已知为 0）必须被复活——免费模型仍可调用，而 parked 的凭据余额永远不会
+// 自己变回来。manual / session-dead 两道护栏由调用方先行排除。
+func TestReenableRevivesLegacySpentDisable(t *testing.T) {
 	cr := &creditsSummary{TotalRemain: 0, TotalUsed: 200, TotalSize: 200}
-	if shouldReenable(true, cr) {
-		t.Fatal("a spent account must not be re-enabled")
+	if !shouldReenable(true, cr) {
+		t.Fatal("a spent account disabled by the old rule must be revived")
+	}
+	// 余额未知（cr == nil）依旧不复活：错误的恢复比再等一拍更糟。
+	if shouldReenable(true, nil) {
+		t.Fatal("unknown balance must not re-enable")
+	}
+	// 未停用的账号永远不需要"恢复"动作。
+	if shouldReenable(false, cr) {
+		t.Fatal("non-disabled account must return false")
 	}
 }
 

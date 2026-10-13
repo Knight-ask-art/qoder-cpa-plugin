@@ -114,19 +114,47 @@ func isSoftRateLimit(status int, body string) bool {
 }
 
 // lifecycleActionFor chooses disable/none from credits.
-// QoderWork is CN-only — disable (not delete) so check-in can restore credits
-// without forcing the user to re-import a PAT.
+//
+// ★ Credits exhausted no longer disables the account. The catalog carries
+// free models (price_factor 0, e.g. qfmodel), and those stay callable on a
+// credential with 0 remaining credits — so "耗尽" does NOT mean the credential
+// is useless. The old behaviour disabled the whole auth, which took every free
+// model down with it: the account kept its catalog in the panel but CPA never
+// offered it as a candidate again, and because a disabled account receives no
+// traffic the balance could never move on its own — a deadlock, not a policy.
+// (Intl has no check-in to restore credits at all, so there the account was
+// parked forever; this is the same defect workbuddy retired in 0.9.10.)
+//
+// The upstream is the authority on what a drained credential may still call:
+// a refused paid model answers with a hard-credit error, which
+// isHardCreditError already classifies for cooldown and for the panel's
+// exhausted badge. Leaving the account enabled costs nothing, because CPA
+// routes elsewhere when a credential genuinely cannot serve.
+//
+// Kept as a named function (rather than deleting the call site) so the region
+// split and its rationale remain visible if this ever needs to come back.
 func lifecycleActionFor(region string, cr *creditsSummary) lifecycleAction {
 	if !shouldActOnCredits(cr) {
 		return lifecycleNone
 	}
-	return lifecycleDisable
+	// Exhausted: leave the credential in place so free (rate 0) models keep
+	// working; a paid model's own upstream error is the correct signal.
+	return lifecycleNone
 }
 
-// shouldReenable is true when a disabled account has credits available again.
+// shouldReenable is true when a disabled account should be brought back.
 //
-// It reads only the balance, so it applies to both regions; the name keeps the
-// CN suffix only because that is where it started.
+// ★ It no longer requires positive credits. Exhausted credits stopped being a
+// reason to disable an account (see lifecycleActionFor), so a disabled account
+// with 0 remaining is a leftover from the old rule and must be revived even
+// though the balance cannot grow while it sits parked.
+//
+// The caller has already excluded the two disables that must survive:
+// manual (the operator parked it on purpose) and session-dead (the credential
+// itself is revoked; re-login is the fix). What remains is "credits known and
+// not otherwise condemned" — revive it. cr == nil (balance unknown) still
+// returns false: the caller bails out before reaching here, and a wrong
+// re-enable of a possibly-broken credential is worse than one more idle tick.
 func shouldReenable(disabled bool, cr *creditsSummary) bool {
 	if !disabled {
 		return false
@@ -134,11 +162,7 @@ func shouldReenable(disabled bool, cr *creditsSummary) bool {
 	if cr == nil {
 		return false
 	}
-	if isCreditsExhausted(cr) {
-		return false
-	}
-	// Known positive remain, or non-exhausted with packages still having room.
-	return cr.TotalRemain > 0
+	return true
 }
 
 // chatSizeMarkers are substrings (case-insensitive) of upstream rejections

@@ -31,6 +31,7 @@ package main
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -45,6 +46,17 @@ func panelRegionCell(facts modelRegionFacts) map[string]any {
 		cell["price_factor"] = *facts.PriceFactor
 	} else {
 		cell["price_factor"] = nil
+	}
+	if facts.OriginalPriceFactor != nil {
+		cell["original_price_factor"] = *facts.OriginalPriceFactor
+	} else {
+		cell["original_price_factor"] = nil
+	}
+	cell["is_free"] = facts.IsFree
+	if facts.Promotion != nil {
+		cell["promotion"] = cloneQoderPromotion(facts.Promotion)
+	} else {
+		cell["promotion"] = nil
 	}
 	if facts.ContextLength != nil {
 		cell["context_length"] = *facts.ContextLength
@@ -70,6 +82,62 @@ func panelRegionCell(facts modelRegionFacts) map[string]any {
 		cell["thinking"] = &thinkingFacts{Status: "unknown"}
 	}
 	return cell
+}
+
+// buildModelPromotionsQuery exposes promotion metadata separately from the
+// large model catalog. Qoder keeps facts per account+region in the in-memory
+// discovery cache; this function de-duplicates identical model promotions and
+// preserves the gateway's price_factor as the current authoritative rate.
+func buildModelPromotionsQuery() map[string]any {
+	promotions := map[string][]map[string]any{regionCN: {}, regionIntl: {}}
+	status := map[string]any{}
+	now := time.Now().UTC()
+	for _, region := range []string{regionCN, regionIntl} {
+		seen := make(map[string]bool)
+		for _, key := range cachedRegionKeysByRegion(region) {
+			facts, ok := cachedRegionFactsFor(key)
+			if !ok {
+				continue
+			}
+			for modelID, fact := range facts {
+				if fact.Promotion == nil || seen[modelID] {
+					continue
+				}
+				seen[modelID] = true
+				entry := map[string]any{
+					"model_id":  modelID,
+					"promotion": cloneQoderPromotion(fact.Promotion),
+					"is_free":   fact.IsFree,
+				}
+				if fact.PriceFactor != nil {
+					entry["price_factor"] = *fact.PriceFactor
+				}
+				if fact.OriginalPriceFactor != nil {
+					entry["original_price_factor"] = *fact.OriginalPriceFactor
+				} else if fact.Promotion.BeforePromotionPriceFactor != nil {
+					entry["original_price_factor"] = *fact.Promotion.BeforePromotionPriceFactor
+				}
+				promotions[region] = append(promotions[region], entry)
+			}
+		}
+		sort.SliceStable(promotions[region], func(i, j int) bool {
+			return promotions[region][i]["model_id"].(string) < promotions[region][j]["model_id"].(string)
+		})
+		if len(promotions[region]) == 0 {
+			status[region] = "not_loaded"
+		} else {
+			status[region] = "loaded"
+		}
+	}
+	return map[string]any{
+		"promotions": promotions,
+		"status":     status,
+		"clock": map[string]any{
+			"unix":   now.Unix(),
+			"minute": now.Hour()*60 + now.Minute(),
+			"zone":   "UTC",
+		},
+	}
 }
 
 // missingRegionCell states why a region has no facts for a model. loaded is per

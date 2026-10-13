@@ -410,13 +410,16 @@ func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 		return nil, fmt.Errorf("no chat scene in models response")
 	}
 	var models []struct {
-		Key            string  `json:"key"`
-		DisplayName    string  `json:"display_name"`
-		Enable         bool    `json:"enable"`
-		IsReasoning    bool    `json:"is_reasoning"`
-		IsVL           bool    `json:"is_vl"`
-		MaxInputTokens int64   `json:"max_input_tokens"`
-		PriceFactor    float64 `json:"price_factor"`
+		Key                 string              `json:"key"`
+		DisplayName         string              `json:"display_name"`
+		Enable              bool                `json:"enable"`
+		IsReasoning         bool                `json:"is_reasoning"`
+		IsVL                bool                `json:"is_vl"`
+		MaxInputTokens      int64               `json:"max_input_tokens"`
+		PriceFactor         float64             `json:"price_factor"`
+		OriginalPriceFactor *float64            `json:"original_price_factor"`
+		IsFree              bool                `json:"is_free"`
+		Promotion           *qoderPromotionWire `json:"promotion"`
 		// The gateway publishes reasoning and context tiers per model; without
 		// these two the panel could only show "未上报" and a bare token count.
 		Thinking      *qoderThinkingConfigWire        `json:"thinking_config"`
@@ -456,10 +459,13 @@ func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 		}
 		factor := m.PriceFactor
 		regions[m.Key] = modelRegionFacts{
-			PriceFactor:   &factor,
-			ContextLength: &effectiveCtx,
-			ContextTiers:  tiers,
-			Thinking:      parseThinkingFacts(m.Thinking, m.IsReasoning),
+			PriceFactor:         &factor,
+			OriginalPriceFactor: cloneFloat64Ptr(m.OriginalPriceFactor),
+			IsFree:              m.IsFree,
+			Promotion:           normalizeQoderPromotion(m.Promotion, time.Now()),
+			ContextLength:       &effectiveCtx,
+			ContextTiers:        tiers,
+			Thinking:            parseThinkingFacts(m.Thinking, m.IsReasoning),
 		}
 	}
 	if len(out) == 0 {
@@ -470,6 +476,11 @@ func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 	// other's catalog. The capability facts ride along for the same reason --
 	// the tiers are per region too.
 	storeDynamicModelsForWithRegions(accountCacheKey(sa), out, factors, regions)
+	// Persist the same result to disk (model_store.go) so a CPA restart can
+	// answer the panel and the registration fan-out without upstream calls.
+	// Best-effort and silent: discovery already succeeded; a cache-write error
+	// must not surface as a model-list failure.
+	persistModelCatalogFor(sa, out, factors, regions)
 	return out, nil
 }
 

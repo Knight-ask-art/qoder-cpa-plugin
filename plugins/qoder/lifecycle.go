@@ -1,9 +1,13 @@
-// lifecycle.go implements credit-based auth lifecycle for qoderwork:
-//   - CN exhausted  → disable auth file (disabled:true), re-enable after check-in when credits return
-//   - exhausted → delete auth file (one-shot quota)
+// lifecycle.go implements credit-aware auth lifecycle for qoderwork:
+//   - exhausted → DO NOT disable (since 0.9.18): free rate-0 models stay
+//     callable on a zero balance, so only the upstream's own hard-credit error
+//     may sideline a paid model (per-model cooldown + panel badge). See
+//     lifecycleActionFor in policy.go for the full rationale.
+//   - disabled leftovers of the old rule → re-enabled once the balance is
+//     known and the disable was not manual / session-dead
+//   - manual disable & SESSION-DEAD/TOKEN_EXPIRE → always respected, never auto-revived
 //   - Unknown credits → no-op (never mis-kill)
-//   - Hard credit errors from executor → recheck credits then apply policy
-//   - Soft rate limits → do not delete CN
+//   - Soft rate limits → no lifecycle action
 package main
 
 import (

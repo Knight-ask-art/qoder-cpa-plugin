@@ -17,7 +17,9 @@ package main
 
 import (
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // effortRank orders reasoning tiers by intensity rather than alphabetically.
@@ -55,13 +57,67 @@ type thinkingFacts struct {
 	EffortNames []string `json:"-"`
 }
 
+// qoderPromotionFacts is the promotion block published alongside one chat
+// model. price_factor is kept as the authoritative current rate; this block is
+// explanatory metadata (badge, original factor, schedule and link). The Qoder
+// gateway is not consistent about whether price_factor already includes the
+// promotion (qmodel_38max does, qmodel may not), so the plugin never multiplies
+// it a second time.
+type qoderPromotionFacts struct {
+	Active                     bool                   `json:"active"`
+	BadgeZh                    string                 `json:"badge_zh,omitempty"`
+	BadgeEn                    string                 `json:"badge_en,omitempty"`
+	DescriptionZh              string                 `json:"description_zh,omitempty"`
+	DescriptionEn              string                 `json:"description_en,omitempty"`
+	RuleID                     string                 `json:"rule_id,omitempty"`
+	DiscountFactor             *float64               `json:"discount_factor,omitempty"`
+	BeforePromotionPriceFactor *float64               `json:"before_promotion_price_factor,omitempty"`
+	Timezone                   string                 `json:"timezone,omitempty"`
+	WindowStart                string                 `json:"window_start,omitempty"`
+	WindowEnd                  string                 `json:"window_end,omitempty"`
+	LinkZh                     string                 `json:"link_zh,omitempty"`
+	LinkEn                     string                 `json:"link_en,omitempty"`
+	Windows                    []qoderPromotionWindow `json:"windows,omitempty"`
+}
+
+type qoderPromotionWindow struct {
+	StartMin    int `json:"startMin"`
+	DurationMin int `json:"durationMin"`
+}
+
+// qoderPromotionWire mirrors the nested objects returned by model/list.
+type qoderPromotionWire struct {
+	Active bool `json:"active"`
+	Badge  struct {
+		En string `json:"en"`
+		Zh string `json:"zh"`
+	} `json:"badge"`
+	Description struct {
+		En string `json:"en"`
+		Zh string `json:"zh"`
+	} `json:"description"`
+	RuleID                     string   `json:"rule_id"`
+	DiscountFactor             *float64 `json:"discount_factor"`
+	BeforePromotionPriceFactor *float64 `json:"before_promotion_price_factor"`
+	Timezone                   string   `json:"timezone"`
+	WindowStart                string   `json:"window_start"`
+	WindowEnd                  string   `json:"window_end"`
+	LinkURL                    struct {
+		En string `json:"en"`
+		Zh string `json:"zh"`
+	} `json:"link_url"`
+}
+
 // modelRegionFacts is everything the panel shows for one model in one region
 // beyond what pluginapi.ModelInfo already carries.
 type modelRegionFacts struct {
-	PriceFactor   *float64       `json:"price_factor,omitempty"`
-	ContextLength *int64         `json:"context_length,omitempty"`
-	ContextTiers  []contextTier  `json:"context_tiers,omitempty"`
-	Thinking      *thinkingFacts `json:"thinking,omitempty"`
+	PriceFactor         *float64             `json:"price_factor,omitempty"`
+	OriginalPriceFactor *float64             `json:"original_price_factor,omitempty"`
+	IsFree              bool                 `json:"is_free,omitempty"`
+	Promotion           *qoderPromotionFacts `json:"promotion,omitempty"`
+	ContextLength       *int64               `json:"context_length,omitempty"`
+	ContextTiers        []contextTier        `json:"context_tiers,omitempty"`
+	Thinking            *thinkingFacts       `json:"thinking,omitempty"`
 }
 
 // wire types mirroring the upstream JSON. Field presence is what carries the
@@ -86,6 +142,100 @@ type qoderThinkingEffortWire struct {
 type qoderContextTierWire struct {
 	TokenCount int64 `json:"token_count"`
 	IsDefault  bool  `json:"is_default"`
+}
+
+func normalizeQoderPromotion(w *qoderPromotionWire, now time.Time) *qoderPromotionFacts {
+	if w == nil {
+		return nil
+	}
+	p := &qoderPromotionFacts{
+		Active:                     w.Active,
+		BadgeZh:                    strings.TrimSpace(w.Badge.Zh),
+		BadgeEn:                    strings.TrimSpace(w.Badge.En),
+		DescriptionZh:              strings.TrimSpace(w.Description.Zh),
+		DescriptionEn:              strings.TrimSpace(w.Description.En),
+		RuleID:                     strings.TrimSpace(w.RuleID),
+		DiscountFactor:             cloneFloat64Ptr(w.DiscountFactor),
+		BeforePromotionPriceFactor: cloneFloat64Ptr(w.BeforePromotionPriceFactor),
+		Timezone:                   strings.TrimSpace(w.Timezone),
+		WindowStart:                strings.TrimSpace(w.WindowStart),
+		WindowEnd:                  strings.TrimSpace(w.WindowEnd),
+		LinkZh:                     strings.TrimSpace(w.LinkURL.Zh),
+		LinkEn:                     strings.TrimSpace(w.LinkURL.En),
+	}
+	if p.Timezone == "" {
+		p.Timezone = "UTC"
+	}
+	if p.WindowStart != "" && p.WindowEnd != "" {
+		if window, ok := normalizeQoderWindow(p.WindowStart, p.WindowEnd, p.Timezone, now); ok {
+			p.Windows = []qoderPromotionWindow{window}
+		}
+	}
+	return p
+}
+
+func normalizeQoderWindow(start, end, zoneName string, now time.Time) (qoderPromotionWindow, bool) {
+	startLocal, okStart := parseQoderClockMinute(start)
+	endLocal, okEnd := parseQoderClockMinute(end)
+	if !okStart || !okEnd {
+		return qoderPromotionWindow{}, false
+	}
+	duration := ((endLocal-startLocal)%1440 + 1440) % 1440
+	if duration == 0 {
+		duration = 1440
+	}
+	loc, err := time.LoadLocation(zoneName)
+	if err != nil {
+		loc = time.UTC
+	}
+	_, offsetSeconds := now.In(loc).Zone()
+	startUTC := ((startLocal-offsetSeconds/60)%1440 + 1440) % 1440
+	return qoderPromotionWindow{StartMin: startUTC, DurationMin: duration}, true
+}
+
+func parseQoderClockMinute(value string) (int, bool) {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) < 1 || len(parts) > 2 {
+		return 0, false
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 24 {
+		return 0, false
+	}
+	minute := 0
+	if len(parts) == 2 {
+		minute, err = strconv.Atoi(parts[1])
+		if err != nil || minute < 0 || minute > 59 {
+			return 0, false
+		}
+	}
+	if hour == 24 && minute != 0 {
+		return 0, false
+	}
+	return hour*60 + minute, true
+}
+
+// qoderPromotionActiveAt applies only the upstream rule's recurring window.
+// price_factor itself remains authoritative; this helper is for panel badges and
+// the /promotions response's current-state hint only.
+func qoderPromotionActiveAt(p *qoderPromotionFacts, now time.Time) bool {
+	if p == nil || !p.Active {
+		return false
+	}
+	if len(p.Windows) == 0 {
+		return true
+	}
+	minute := now.UTC().Hour()*60 + now.UTC().Minute()
+	for _, w := range p.Windows {
+		if w.DurationMin >= 1440 {
+			return true
+		}
+		delta := (minute - w.StartMin + 1440) % 1440
+		if delta < w.DurationMin {
+			return true
+		}
+	}
+	return false
 }
 
 // parseThinkingFacts converts the upstream thinking_config into the panel's
@@ -269,11 +419,25 @@ func cloneInt64Ptr(value *int64) *int64 {
 	return &copied
 }
 
+func cloneQoderPromotion(p *qoderPromotionFacts) *qoderPromotionFacts {
+	if p == nil {
+		return nil
+	}
+	copy := *p
+	copy.DiscountFactor = cloneFloat64Ptr(p.DiscountFactor)
+	copy.BeforePromotionPriceFactor = cloneFloat64Ptr(p.BeforePromotionPriceFactor)
+	copy.Windows = append([]qoderPromotionWindow(nil), p.Windows...)
+	return &copy
+}
+
 func cloneRegionFacts(facts modelRegionFacts) modelRegionFacts {
 	return modelRegionFacts{
-		PriceFactor:   cloneFloat64Ptr(facts.PriceFactor),
-		ContextLength: cloneInt64Ptr(facts.ContextLength),
-		ContextTiers:  cloneContextTiers(facts.ContextTiers),
-		Thinking:      cloneThinkingFacts(facts.Thinking),
+		PriceFactor:         cloneFloat64Ptr(facts.PriceFactor),
+		OriginalPriceFactor: cloneFloat64Ptr(facts.OriginalPriceFactor),
+		IsFree:              facts.IsFree,
+		Promotion:           cloneQoderPromotion(facts.Promotion),
+		ContextLength:       cloneInt64Ptr(facts.ContextLength),
+		ContextTiers:        cloneContextTiers(facts.ContextTiers),
+		Thinking:            cloneThinkingFacts(facts.Thinking),
 	}
 }

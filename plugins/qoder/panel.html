@@ -52,6 +52,28 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:14px}
 .card,.summary{min-width:0;background:var(--card);border:1px solid var(--border);border-radius:12px}
+/* 活动卡：默认折叠成一行摘要，点标题展开明细。与 WorkBuddy 面板同一套命名，
+   两个插件的活动卡行为一致。 */
+.promo-box{padding:12px 16px}.promo-hd{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.promo-title{font-weight:700;font-size:14px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px}
+.promo-title::before{content:"▸";color:var(--mut);font-size:11px;transition:transform .15s ease}
+.promo-box.open .promo-title::before{transform:rotate(90deg)}
+.promo-live{color:var(--ok)}.promo-live.zero{color:var(--mut)}
+.promo-meta{color:var(--mut);font-size:12px}
+.promo-list{display:none;flex-direction:column;gap:5px;margin-top:10px}
+.promo-box.open .promo-list{display:flex}
+.promo-row{display:grid;grid-template-columns:minmax(84px,auto) minmax(140px,1.3fr) minmax(90px,auto) minmax(60px,auto) minmax(150px,1.2fr);gap:10px;align-items:center;padding:7px 9px;border-radius:8px;background:var(--surface);font-size:12px;border-left:3px solid var(--mut-border)}
+.promo-row.on{border-left-color:var(--ok);background:var(--ok-soft)}
+.promo-row.off{opacity:.72}
+.promo-badge{font-weight:700;color:var(--mut);white-space:nowrap}
+.promo-badge.on{color:var(--ok)}
+.promo-model{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.promo-more{color:var(--mut);font-weight:400;cursor:help}
+.promo-price{font-variant-numeric:tabular-nums;font-weight:700;color:var(--fg)}
+.promo-realm{color:var(--mut);font-size:11px}
+.promo-state{font-size:11px}
+.promo-state.on{color:var(--ok)}
+.promo-state.off{color:var(--mut)}
 .card{padding:16px}
 .card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px}
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
@@ -302,6 +324,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+  <div class="card promo-box" id="promoBox" style="display:none;margin-top:16px"></div>
   <div class="card" id="modelBox" style="margin-top:16px">
     <h2>模型列表 <span style="display:flex;gap:6px;align-items:center">
       <span class="badge" id="modelSource" title="当前模型目录的来源">—</span>
@@ -798,6 +821,8 @@ async function load(force, btn){
     // Lazy-load credits for cards that don't have them yet.
     lazyLoadCredits(accounts);
     loadModels(false);
+    loadPromotions();
+    if(!qPromoTimer) qPromoTimer=setInterval(()=>{renderQPromotions();renderModels()},30000);
     if(force){
       const errN=accounts.filter(a=>a.error).length;
       const life=(d.lifecycle||[]).length;
@@ -1033,11 +1058,119 @@ function contextFactsHTML(r,modelId){
 // present 显示实际值；absent 显示 "—"（该区有目录但没这个模型）；
 // not_loaded 显示 "未加载"（该区没有账号/目录）。两者语义不同，不能混同。
 // modelId 只用于把上下文档位渲染成可点按钮；为空时退化为纯文本（不可点）。
+let qLastPromotions={cn:[],intl:[]};
+let qPromoClock=null;
+let qPromoClockAt=0;
+let qPromoTimer=null;
+function qPromoNow(){
+  if(!qPromoClock)return null;
+  const elapsed=Math.max(0,Date.now()/1000-qPromoClockAt);
+  return {unix:Number(qPromoClock.unix||0)+elapsed,minute:(Number(qPromoClock.minute||0)+Math.floor(elapsed/60))%1440};
+}
+function qPromoActive(p){
+  const now=qPromoNow(); if(!now||!p)return false;
+  if(p.active===false)return false;
+  const ws=Array.isArray(p.windows)?p.windows:[];
+  if(!ws.length)return true;
+  return ws.some(w=>{const s=Number(w.startMin),d=Number(w.durationMin);if(!Number.isFinite(s)||!Number.isFinite(d))return false;if(d>=1440)return true;return ((now.minute-s+1440)%1440)<d});
+}
+function qPromoLabel(p){return String((p&&p.badge_zh)||p&&p.badge_en||'活动').trim()||'活动'}
+// qPromoPrice 拼当前价。原价只在确实与当前价不同时出现，否则只显示一个数——
+// "0.5x → 0.5x" 是纯粹的噪音。
+function qPromoPrice(entry){
+  if(!entry)return '未上报';
+  if(entry.is_free)return '免费 (0x)';
+  const cur=entry.price_factor!=null?Number(entry.price_factor):null;
+  const orig=entry.original_price_factor!=null?Number(entry.original_price_factor):null;
+  if(cur!=null&&Number.isFinite(cur)&&orig!=null&&Number.isFinite(orig)&&orig!==cur)return `${orig}x → ${cur}x`;
+  if(cur!=null&&Number.isFinite(cur))return String(cur)+'x';
+  return '未上报';
+}
+// qPromoWindow 给出活动的生效时段，未生效的行也必须显示它——"未生效"只说明此刻
+// 不在窗口内，不说什么时候会生效，读者没法据此安排调用。
+//
+// 取值顺序：上游原文 window_start/window_end（"22:00"/"08:00"，就是官方文案里那个
+// 时段，最可信）→ 用归一化窗口反推（后端把窗口转成了 UTC 分钟，这里换算回 UTC+8
+// 展示，与上游文案同一时区）→ 兜底"全天"。
+function qPromoWindow(p){
+  if(!p)return '全天';
+  const s=(p.window_start||'').trim(), e=(p.window_end||'').trim();
+  if(s&&e)return `${s}–${e}`;
+  const w=Array.isArray(p.windows)?p.windows:[];
+  if(!w.length)return '全天';
+  if(w.length===1&&Number(w[0].durationMin)>=1440)return '全天';
+  const mins=w.map(x=>{
+    const start=Number(x.startMin), dur=Number(x.durationMin);
+    if(!Number.isFinite(start)||!Number.isFinite(dur))return null;
+    // 后端存的是 UTC 分钟；上游时段按 UTC+8 表述，换算回去对齐官方文案。
+    const s8=(start+480)%1440, e8=(start+dur+480)%1440;
+    return `${qHHMM(s8)}–${qHHMM(e8)}`;
+  }).filter(Boolean);
+  return mins.length?mins.join('、'):'全天';
+}
+function qHHMM(min){
+  const m=((Number(min)%1440)+1440)%1440;
+  return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+}
+function qPromoDesc(p){return (p&&(p.description_zh||p.description_en))||''}
+function qPromoTitle(entry,active){
+  const p=(entry&&entry.promotion)||{};
+  return [qPromoLabel(p),active?'当前生效':'当前未生效',qPromoPrice(entry),qPromoWindow(p),qPromoDesc(p),p.link_zh||p.link_en].filter(Boolean).join(' · ');
+}
+function acceptQPromotions(d){qLastPromotions=(d&&d.promotions)||{cn:[],intl:[]};qPromoClock=(d&&d.clock)||null;qPromoClockAt=Date.now()/1000;renderQPromotions();renderModels()}
+function renderQPromotions(){
+  const box=document.getElementById('promoBox');if(!box)return;
+  // qoder 的活动天然带在模型条目上，一个模型一条，按模型聚合即可；CN / Intl 两侧
+  // 的同名模型合并成一行，区域放 tooltip 与独立列。
+  const byModel=new Map();
+  for(const region of ['cn','intl'])for(const e of (Array.isArray(qLastPromotions[region])?qLastPromotions[region]:[])){
+    if(!e||!e.promotion)continue;
+    const id=String(e.model_id||''); if(!id)continue;
+    if(!byModel.has(id))byModel.set(id,[]);
+    byModel.get(id).push({region,entry:e});
+  }
+  if(!byModel.size){box.style.display='none';box.innerHTML='';return}
+  const rows=[];
+  for(const [id,items] of byModel){
+    const active=items.find(x=>qPromoActive(x.entry.promotion));
+    const pick=active||items[0];
+    // 折扣力度排序用 effective 倍率：免费最前，其余按当前倍率升序。
+    const cur=pick.entry.is_free?0:Number(pick.entry.price_factor);
+    rows.push({id,items,active:!!active,pick,cur:Number.isFinite(cur)?cur:99});
+  }
+  const live=rows.filter(r=>r.active).sort((a,b)=>a.cur-b.cur);
+  const later=rows.filter(r=>!r.active).sort((a,b)=>a.cur-b.cur);
+  box.style.display='block';
+  const rowHTML=r=>{
+    const e=r.pick.entry,p=e.promotion;
+    const price=qPromoPrice(e);
+    const realms=[...new Set(r.items.map(x=>x.region==='cn'?'CN':'Intl'))].join(' / ');
+    const dup=r.items.length>1?` <span class="promo-more" title="${esc(r.items.map(x=>x.region).join('、'))}">×${r.items.length}</span>`:'';
+    // 未生效必须带上生效时段：只说"未生效"读者不知道几点回来，等于没给信息。
+    const win=qPromoWindow(p);
+    const state=r.active
+      ?`<span class="promo-state on">生效中${win&&win!=='全天'?` · ${esc(win)}`:''}</span>`
+      :`<span class="promo-state off">未生效 · 生效时段 ${esc(win)}</span>`;
+    return `<div class="promo-row ${r.active?'on':'off'}" title="${esc(qPromoTitle(e,r.active))}"><span class="promo-badge ${r.active?'on':'off'}">${esc(qPromoLabel(p))}</span><span class="promo-model">${esc(r.id)}${dup}</span><span class="promo-price">${esc(price)}</span><span class="promo-realm">${esc(realms)}</span>${state}</div>`;
+  };
+  const head=`<div class="promo-hd"><div class="promo-title" id="promoToggle" title="点击展开/收起活动明细">Qoder 上游活动 · <span class="promo-live${live.length?'':' zero'}">生效 ${live.length}</span>${later.length?` / 未生效 ${later.length}`:''}</div><div class="promo-meta">活动时钟 ${qPromoClock&&qPromoClock.zone||'UTC'} · 每 30 秒自动刷新</div></div>`;
+  const list=[...live.map(r=>rowHTML(r)),...later.map(r=>rowHTML(r))].join('');
+  // 展开态在定时刷新之间保持。
+  const wasOpen=box.classList.contains('open');
+  box.innerHTML=head+`<div class="promo-list">${list}</div>`;
+  if(wasOpen)box.classList.add('open');
+  const toggle=document.getElementById('promoToggle');
+  if(toggle&&!toggle._promoBound){toggle._promoBound=true;toggle.addEventListener('click',()=>box.classList.toggle('open'));}
+}
+async function loadPromotions(){try{acceptQPromotions(await api('/promotions'))}catch(e){const box=document.getElementById('promoBox');if(box){box.style.display='block';box.innerHTML='<div class="promo-meta">活动信息未加载：'+esc(e.message||String(e))+'</div>'}}}
 function regionCell(m, region, modelId){
   const r=m&&m[region];
   if(!r||r.status==="not_loaded"||r.present===null) return "未加载";
   if(r.status==="absent"||r.present===false) return "—";
   if(r.status!=="present"&&r.present!==true) return "未加载";
+  // 倍率只报上游给的 price_factor，不叠加活动解释。活动折扣集中在活动卡里呈现，
+  // 这里再画一次划线价会让同一事实出现两处；而且这一行的语义是"该分区上报的倍率"，
+  // 混进活动价后无法再回答"这个模型原价多少"。要看折扣去上面的活动卡。
   const credit=creditText(r.price_factor);
   const think=thinkingText(r.thinking||{});
   return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span class="realm-facts-ctx" title="该分区上报的上下文档位；加粗项为当前实际生效档位，点其它档位即可切换">上下文 ${contextFactsHTML(r,modelId)}</span></div>`;
