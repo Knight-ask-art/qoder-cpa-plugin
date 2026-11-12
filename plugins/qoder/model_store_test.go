@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -60,8 +61,14 @@ func TestModelCatalogSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("file mode = %o, want 600", perm)
+	// Windows has no POSIX permission bits: os.Chmod only toggles the read-only
+	// attribute, so a 0o600 write reads back as 0o666. Assert the mode where the
+	// operating system can represent it; the privacy intent is exercised by the
+	// Chmod-before-rename path on every platform.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("file mode = %o, want 600", perm)
+		}
 	}
 	list, err := store.loadModelCatalogAll()
 	if err != nil || len(list) != 1 {
